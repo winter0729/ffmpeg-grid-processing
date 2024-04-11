@@ -410,15 +410,32 @@ def combine_audio_video(video_path, audio_path, output_path):
     process = subprocess.run(command, universal_newlines=True)
     print("combine audio video Done")
 
+def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
+    for root, dirs, files in os.walk(dir_path):
+        for file in files:
+            if file.endswith(('.mp4', '.ts')):
+                input_path = os.path.join(root, file)
+                print(f"Processing: {input_path}")
+                print(f"Processing remaining: {len(files)} : {file}")
+                divide_2x2_with_progress(input_path, divide_tmp)
+                merge_tile_2x2(divide_tmp, f"{merge_tmp}/merged.mp4")
+                reverse_video(merge_tmp, output_dir, temp_dir, reverse_dir)
+
 
 if __name__ == '__main__':
     input_path = './rev_test.mp4'
-    output_dir = './output'
     temp_dir = './output/temp'
+    divide_tmp = './output/divide_tmp'
+    merge_tmp = './output/merge_tmp'
     reverse_dir = './output/reversed'
-    divide_2x2_with_progress(input_path, output_dir)
-    merge_tile_2x2(output_dir, f"{output_dir}/merged.mp4")
-    reverse_video(input_path, output_dir, temp_dir, reverse_dir)
+    dir_path = './test_dir'
+    output_dir = './output'
+
+    run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir)
+
+    # divide_2x2_with_progress(input_path, output_dir)
+    # merge_tile_2x2(output_dir, f"{output_dir}/merged.mp4")
+    # reverse_video(input_path, output_dir, temp_dir, reverse_dir)
     #reverse_audio(input_path, temp_dir)
     #concat_segments(filelist_path= f'{output_dir}/filelist.txt', output_path=f'{output_dir}/final_reversed.mp4')
     #concatenate_segments(reverse_dir, output_path = f"{output_dir}/reversed.mp4")
