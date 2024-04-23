@@ -8,7 +8,7 @@ import ffmpeg
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-max_worker = 4
+max_worker = 6
 
 def progressbar(label, total):
     pbar = tqdm(total=total, desc=label, unit='B', unit_scale=True, unit_divisor=1024)
@@ -216,7 +216,7 @@ def merge_tile_2x2(tile_path, output_path):
 
 def reverse_video(input_path, output_dir, temp_dir, reversed_dir):
     print("reverse video")
-    input_path = f"{output_dir}/merged.mp4"
+    #input_path = f"{output_dir}/merged.mp4"
     output_path = f"{output_dir}/reversed.mp4"
     segment_duration = 20
 
@@ -255,7 +255,7 @@ def split_video(input_path, segment_duration, temp_dir):
         '-break_non_keyframes', '0',
         '-reset_timestamps', '1',
         '-c', 'copy',
-        f'{temp_dir}/segment%03d.mp4',
+        f'{temp_dir}/segment%010d.mp4',
         '-y'
     ]
 
@@ -313,6 +313,7 @@ def process_segment(input_path, output_path):
         '-vf', 'reverse,setpts=PTS-STARTPTS',  # 비디오 프레임 역순 및 타임스탬프 조정
         # '-af', 'areverse,asetpts=PTS-STARTPTS',  # 오디오 프레임 역순 및 타임스탬프 조정
         '-c:v', 'h264_nvenc',
+        '-threads', '0',
         '-vsync', '0',
         '-an',
         # '-async', '1',
@@ -338,6 +339,7 @@ def process_segment(input_path, output_path):
             '-c:v', 'h264_nvenc',
             '-vsync', '0'
             '-an',
+            '-threads', '0',
             # '-async', '1',
             # '-c:a', 'aac',
             '-b:v', '8000k',
@@ -363,6 +365,7 @@ def reverse_audio(input_path, temp_dir):
         '-progress', '-',  # 진행률 표시
         '-af', 'areverse',
         '-c:a', 'aac',
+        '-threads', '0',
         '-channel_layout', 'stereo',
         f'{temp_dir}/reversed_audio.mp4',
         '-y'
@@ -423,7 +426,7 @@ def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
 
 
 if __name__ == '__main__':
-    input_path = './rev_test.mp4'
+    input_path = '86126056 20230713 095729 ts.mp4'
     temp_dir = './output/temp'
     divide_tmp = './output/divide_tmp'
     merge_tmp = './output/merge_tmp'
@@ -431,11 +434,11 @@ if __name__ == '__main__':
     dir_path = './test_dir'
     output_dir = './output'
 
-    run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir)
+    # run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir)
 
     # divide_2x2_with_progress(input_path, output_dir)
     # merge_tile_2x2(output_dir, f"{output_dir}/merged.mp4")
-    # reverse_video(input_path, output_dir, temp_dir, reverse_dir)
+    reverse_video(input_path, output_dir, temp_dir, reverse_dir)
     #reverse_audio(input_path, temp_dir)
     #concat_segments(filelist_path= f'{output_dir}/filelist.txt', output_path=f'{output_dir}/final_reversed.mp4')
     #concatenate_segments(reverse_dir, output_path = f"{output_dir}/reversed.mp4")
