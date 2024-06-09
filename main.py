@@ -9,8 +9,8 @@ import ffmpeg
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-max_worker = 6
-gpu_devices = itertools.cycle([0, 1])
+max_worker = 8
+gpu_devices = itertools.cycle([0])
 
 def progressbar(label, total):
     pbar = tqdm(total=total, desc=label, unit='B', unit_scale=True, unit_divisor=1024)
@@ -288,23 +288,32 @@ def reverse_segment(temp_dir, reversed_dir):
         os.makedirs(reversed_dir)
 
 
-    with ThreadPoolExecutor(max_workers=max_worker) as executor:
-        count = 0
-        segment_files = sorted(os.listdir(temp_dir))
-        total_segments = len(segment_files)
+    segment_files = sorted(os.listdir(temp_dir))
+    total_segments = len(segment_files)
 
-        with ThreadPoolExecutor(max_workers=max_worker) as executor:
-            future_to_segment = {executor.submit(process_segment, os.path.join(temp_dir, seg_file),
-                                                 os.path.join(reversed_dir, seg_file), next(gpu_devices)): seg_file for seg_file in
-                                 segment_files}
-            for i, future in enumerate(as_completed(future_to_segment), 1):
-                segment = future_to_segment[future]
-                try:
-                    future.result()
-                    count += 1
-                    print(f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments} | 할당 gpu device: {next(gpu_devices)}")
-                except Exception as exc:
-                    print(f"{segment} 처리 중 에러 발생: {exc}")
+    with ThreadPoolExecutor(max_workers=max_worker) as executor:
+        future_to_segment = {
+            executor.submit(
+                process_segment,
+                os.path.join(temp_dir, seg_file),
+                os.path.join(reversed_dir, seg_file),
+                next(gpu_devices)
+            ): seg_file
+            for seg_file in segment_files
+        }
+
+        count = 0
+        for i, future in enumerate(as_completed(future_to_segment), 1):
+            segment = future_to_segment[future]
+            gpu_device = next(gpu_devices)  # 현재 작업에 할당된 GPU 번호를 가져옴
+            try:
+                future.result()
+                count += 1
+                print(f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments} | 할당 GPU: {gpu_device}")
+            except subprocess.CalledProcessError as exc:
+                print(f"{segment} 처리 중 ffmpeg 에러 발생 (GPU {gpu_device}): {exc}")
+            except Exception as exc:
+                print(f"{segment} 처리 중 알 수 없는 에러 발생 (GPU {gpu_device}): {exc}")
 
     # for segment_file in sorted(os.listdir(temp_dir)):
     #     print(f"remaining segment: {segment_file} | {len(os.listdir(temp_dir))})")
@@ -337,6 +346,7 @@ def process_segment(input_path, output_path, gpu_deivce):
         '-vf', 'reverse,setpts=PTS-STARTPTS',  # 비디오 프레임 역순 및 타임스탬프 조정
         '-af', 'areverse,asetpts=PTS-STARTPTS',  # 오디오 프레임 역순 및 타임스탬프 조정
         '-c:v', 'h264_nvenc',
+        #'-gpu', f'{gpu_deivce}',
         '-c:a', 'aac',
         '-avoid_negative_ts', 'make_zero',
         # '-vsync', '0',
@@ -350,33 +360,14 @@ def process_segment(input_path, output_path, gpu_deivce):
     # process_bar(process)
     output, errors = process.communicate()  # 프로세스 완료 대기
     if process.returncode != 0:
-        pprint.pprint(f"에러 발생: {output} | {errors}")
+        pprint.pprint(f"에러 발생 (첫 시도): {output} | {errors}")
         pprint.pprint(f"gpu 재처리: {input_path} -> {output_path}")
-        command = [
-            'ffmpeg',
-            '-hwaccel', 'cuda',
-            '-hwaccel_device', f'{gpu_deivce}',
-            '-i', input_path,
-            '-map', '0:v',
-            '-map', '0:a',
-            '-start_at_zero',
-            '-vf', 'reverse,setpts=PTS-STARTPTS',  # 비디오 프레임 역순 및 타임스탬프 조정
-            '-af', 'areverse,asetpts=PTS-STARTPTS',  # 오디오 프레임 역순 및 타임스탬프 조정
-            '-c:v', 'h264_nvenc',
-            '-c:a', 'aac',
-            '-avoid_negative_ts', 'make_zero',
-            # '-vsync', '0',
-            #'-an',
-            '-async', '1',
-            '-b:v', '8000k',
-            output_path,
-            '-y'
-        ]
+
+        # 에러 발생 시 재시도
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        # process_bar(process)
         output, errors = process.communicate()  # 프로세스 완료 대기
         if process.returncode != 0:
-            raise Exception(f"에러 발생 종료!!!!!!!: {output} | {errors}")
+            raise Exception(f"에러 발생 종료 (재시도 후): {output} | {errors}")
 
 
 def reverse_audio(input_path, temp_dir, audio_reversed_dir):
