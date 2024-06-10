@@ -1,15 +1,15 @@
 import pprint
 import itertools
 import os
+import re
 import subprocess
 import json
-import re
 import shutil
-import ffmpeg
-from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-max_worker = 8
+from rich.progress import Progress
+
+max_worker = 1
 gpu_devices = itertools.cycle([0])
 
 
@@ -28,51 +28,43 @@ def get_video_info(input_path):
 
 
 def process_bar(process):
-    pbar = tqdm(total=None)
-    for line in process.stdout:
-        # 출력에서 "Duration: 00:00:
-        # .04"와 같은 라인을 찾아서 전체 동영상 길이를 가져옵니다.
-        if "Duration" in line:
-            match = re.search("Duration: (.*?),", line)
-            if match:
-                time_str = match.group(1)
-                try:
-                    hours, minutes, seconds = map(float, re.split(':', time_str))
-                    total_seconds = hours * 3600 + minutes * 60 + seconds
-                    pbar.total = total_seconds
-                    pbar.refresh()
-                except ValueError:
-                    # 유효하지 않은 시간 형식을 만났을 때의 처리
-                    print(f"유효하지 않은 시간 형식: {time_str}")
-                    continue  # 다음 라인으로 넘어갑니다.
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Processing...", total=100)
 
-            # 출력에서 "time=00:00:10.00"과 같은 라인을 찾아서 현재 진행 시간을 가져옵니다.
-        if "time=" in line:
-            match = re.search("time=(.*?) ", line)
-            if match:
-                time_str = match.group(1)
-                try:
-                    hours, minutes, seconds = map(float, re.split(':', time_str))
-                    elapsed_seconds = hours * 3600 + minutes * 60 + seconds
-                    pbar.n = elapsed_seconds
-                    pbar.refresh()
-                except ValueError:
-                    # 유효하지 않은 시간 형식을 만났을 때의 처리
-                    print(f"유효하지 않은 시간 형식: {time_str}")
-                    continue  # 다음 라인으로 넘어갑니다.
-    pbar.close()
+        for line in process.stdout:
+            if "Duration" in line:
+                total_seconds = extract_seconds(line, "Duration: (.*?),")
+                if total_seconds is not None:
+                    progress.update(task, total=total_seconds)
+
+            if "time=" in line:
+                elapsed_seconds = extract_seconds(line, "time=(.*?) ")
+                if elapsed_seconds is not None:
+                    progress.update(task, completed=elapsed_seconds)
 
 
+def extract_seconds(line, pattern):
+    match = re.search(pattern, line)
+    if match:
+        time_str = match.group(1)
+        try:
+            hours, minutes, seconds = map(float, re.split(':', time_str))
+            return hours * 3600 + minutes * 60 + seconds
+        except ValueError:
+            print(f"Invalid time format: {time_str}")
+    return None
 
 
 def reverse_video(input_path, output_dir, temp_dir, reversed_dir, output_name):
     segment_duration = 10
 
-    # Create necessary directories
-    for dir in [temp_dir, reversed_dir, output_dir]:
-        if os.path.exists(dir):
-            shutil.rmtree(dir)
-        os.makedirs(dir)
+    for directory in [temp_dir, reversed_dir]:
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
+        os.makedirs(directory, exist_ok=True)
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     split_video(input_path, segment_duration, temp_dir)
     reverse_segment(temp_dir, reversed_dir)
@@ -81,8 +73,6 @@ def reverse_video(input_path, output_dir, temp_dir, reversed_dir, output_name):
 
 def split_video(input_path, segment_duration, temp_dir):
     print("split video")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
 
     command = [
         'ffmpeg',
@@ -138,24 +128,6 @@ def reverse_segment(temp_dir, reversed_dir):
             except Exception as exc:
                 print(f"{segment} 처리 중 알 수 없는 에러 발생 (GPU {gpu_device}): {exc}")
 
-    # for segment_file in sorted(os.listdir(temp_dir)):
-    #     print(f"remaining segment: {segment_file} | {len(os.listdir(temp_dir))})")
-    #     input_path = os.path.join(temp_dir, segment_file)
-    #     command = [
-    #         'ffmpeg',
-    #         '-i', input_path,
-    #         '-vf', 'reverse',
-    #         '-af', 'areverse',
-    #         '-c:v', 'h264_nvenc',
-    #         '-b:v', '8000k',
-    #         f'{reversed_dir}/{segment_file}',
-    #         '-y'
-    #     ]
-
-    #
-    #     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    #     process_bar(process)
-
 
 def process_segment(input_path, output_path, gpu_deivce):
     """하나의 비디오 세그먼트를 역순으로 만듭니다."""
@@ -194,24 +166,6 @@ def process_segment(input_path, output_path, gpu_deivce):
             raise Exception(f"에러 발생 종료 (재시도 후): {output} | {errors}")
 
 
-def process_segment_audio(input_path, output_path):
-    """하나의 오디오 세그먼트를 역순으로 만듭니다."""
-    command = [
-        'ffmpeg',
-        '-hwaccel', 'cuda',
-        '-i', input_path,
-        '-map', '0:a',
-        '-start_at_zero',
-        '-af', 'areverse',  # 오디오 프레임 역순 및 타임스탬프 조정
-        '-c:a', 'aac',
-        '-y',
-        output_path
-    ]
-
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
-
-
 def concatenate_segments(reversed_dir, output_path):
     print("concatenate segments")
     with open('segments.txt', 'w') as f:
@@ -237,7 +191,7 @@ def concatenate_segments(reversed_dir, output_path):
     os.remove('segments.txt')
 
 
-def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
+def run(dir_path, output_dir, temp_dir, reverse_dir):
     for root, dirs, files in os.walk(dir_path):
         for i, file in enumerate(files):
             if file.endswith(('.mp4', '.ts')):
@@ -248,14 +202,11 @@ def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
 
 
 if __name__ == '__main__':
-    input_path = '102845970 20230930 044644 001 ts.mp4'
+    input_path = 'input.mp4'
     temp_dir = './output/temp'
-    divide_tmp = './output/divide_tmp'
-    merge_tmp = './output/merge_tmp'
     reverse_dir = './output/reversed'
-    audio_reversed_dir = './output/reversed_audio'
     dir_path = './test_dir'
     output_dir = './output'
 
     # run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir)
-    reverse_video(input_path, output_dir, temp_dir, reverse_dir, audio_reversed_dir, 'reversed_done')
+    reverse_video(input_path, output_dir, temp_dir, reverse_dir, 'reversed_done')
