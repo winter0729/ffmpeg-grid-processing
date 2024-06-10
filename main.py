@@ -1,3 +1,4 @@
+import asyncio
 import pprint
 import itertools
 import os
@@ -7,7 +8,7 @@ import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from rich.progress import Progress
+from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn, TimeElapsedColumn
 
 max_worker = 1
 gpu_devices = itertools.cycle([0])
@@ -67,7 +68,7 @@ def reverse_video(input_path, output_dir, temp_dir, reversed_dir, output_name):
         os.makedirs(output_dir)
 
     split_video(input_path, segment_duration, temp_dir)
-    reverse_segment(temp_dir, reversed_dir)
+    asyncio.run(reverse_segment(temp_dir, reversed_dir))
     concatenate_segments(reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
 
 
@@ -95,75 +96,78 @@ def split_video(input_path, segment_duration, temp_dir):
     process_bar(process)
 
 
-def reverse_segment(temp_dir, reversed_dir):
-    """분할된 모든 비디오 세그먼트를 역순으로 만듭니다."""
-    if not os.path.exists(reversed_dir):
-        os.makedirs(reversed_dir)
+async def worker(name, queue, progress, task_id):
+    while True:
+        segment_file, temp_dir, reversed_dir, gpu_device = await queue.get()
+        try:
+            await process_segment(
+                os.path.join(temp_dir, segment_file),
+                os.path.join(reversed_dir, segment_file),
+                gpu_device
+            )
+            progress.update(task_id, advance=1)
+            print(f"{name} 작업 완료: {segment_file} | 할당 GPU: {gpu_device}")
+        except Exception as e:
+            print(f"{segment_file} 처리 중 오류 발생 (GPU {gpu_device}): {e}")
+        finally:
+            queue.task_done()
+
+
+async def reverse_segment(temp_dir, reversed_dir):
+    os.makedirs(reversed_dir, exist_ok=True)
 
     segment_files = sorted(os.listdir(temp_dir))
     total_segments = len(segment_files)
 
-    with ThreadPoolExecutor(max_workers=max_worker) as executor:
-        future_to_segment = {
-            executor.submit(
-                process_segment,
-                os.path.join(temp_dir, seg_file),
-                os.path.join(reversed_dir, seg_file),
-                next(gpu_devices)
-            ): seg_file
-            for seg_file in segment_files
-        }
+    queue = asyncio.Queue(maxsize=1)
 
-        count = 0
-        for i, future in enumerate(as_completed(future_to_segment), 1):
-            segment = future_to_segment[future]
-            gpu_device = next(gpu_devices)  # 현재 작업에 할당된 GPU 번호를 가져옴
-            try:
-                future.result()
-                count += 1
-                print(
-                    f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments} | 할당 GPU: {gpu_device}")
-            except subprocess.CalledProcessError as exc:
-                print(f"{segment} 처리 중 ffmpeg 에러 발생 (GPU {gpu_device}): {exc}")
-            except Exception as exc:
-                print(f"{segment} 처리 중 알 수 없는 에러 발생 (GPU {gpu_device}): {exc}")
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}% [{task.completed}/{task.total}]"),
+        TimeElapsedColumn(),
+        TimeRemainingColumn()
+    )
+
+    with progress:
+        task_id = progress.add_task("Processing", total=total_segments)
+
+        workers = [asyncio.create_task(worker(f"Worker-{i + 1}", queue, progress, task_id)) for i in range(max_worker)]
+
+        for segment_file in segment_files:
+            await queue.put((segment_file, temp_dir, reversed_dir, next(gpu_devices)))
+
+        await queue.join()
+
+        for worker_task in workers:
+            worker_task.cancel()
 
 
-def process_segment(input_path, output_path, gpu_deivce):
+async def process_segment(input_path, output_path, gpu_device):
     """하나의 비디오 세그먼트를 역순으로 만듭니다."""
     command = [
         'ffmpeg',
         '-hwaccel', 'cuda',
-        '-hwaccel_device', f'{gpu_deivce}',
+        '-hwaccel_device', f'{gpu_device}',
         '-i', input_path,
         '-map', '0:v',
         '-map', '0:a',
         '-start_at_zero',
-        '-vf', 'reverse,setpts=PTS-STARTPTS',  # 비디오 프레임 역순 및 타임스탬프 조정
-        '-af', 'areverse,asetpts=PTS-STARTPTS',  # 오디오 프레임 역순 및 타임스탬프 조정
+        '-vf', 'reverse,setpts=PTS-STARTPTS',
+        '-af', 'areverse,asetpts=PTS-STARTPTS',
         '-c:v', 'h264_nvenc',
-        # '-gpu', f'{gpu_deivce}',
         '-c:a', 'aac',
         '-avoid_negative_ts', 'make_zero',
-        # '-vsync', '0',
-        # '-an',
         '-async', '1',
         '-b:v', '8000k',
         output_path,
         '-y'
     ]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    # process_bar(process)
-    output, errors = process.communicate()  # 프로세스 완료 대기
-    if process.returncode != 0:
-        pprint.pprint(f"에러 발생 (첫 시도): {output} | {errors}")
-        pprint.pprint(f"gpu 재처리: {input_path} -> {output_path}")
+    process = await asyncio.create_subprocess_exec(*command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    stdout, stderr = await process.communicate()
 
-        # 에러 발생 시 재시도
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        output, errors = process.communicate()  # 프로세스 완료 대기
-        if process.returncode != 0:
-            raise Exception(f"에러 발생 종료 (재시도 후): {output} | {errors}")
+    if process.returncode != 0:
+        raise Exception(f"Error during processing: {stdout} | {stderr}")
 
 
 def concatenate_segments(reversed_dir, output_path):
