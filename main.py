@@ -63,32 +63,20 @@ def process_bar(process):
     pbar.close()
 
 
-def reverse_video(input_path, output_dir, temp_dir, reversed_dir, audio_reversed_dir, output_name):
-    print("reverse video")
-    # input_path = f"{output_dir}/merged.mp4"
-    # output_path = f"{output_dir}/reversed.mp4"
+
+
+def reverse_video(input_path, output_dir, temp_dir, reversed_dir, output_name):
     segment_duration = 10
 
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    if os.path.exists(reversed_dir):
-        shutil.rmtree(reversed_dir)
-    if os.path.exists(audio_reversed_dir):
-        shutil.rmtree(audio_reversed_dir)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    if not os.path.exists(reversed_dir):
-        os.makedirs(reversed_dir)
-    if not os.path.exists(audio_reversed_dir):
-        os.makedirs(audio_reversed_dir)
+    # Create necessary directories
+    for dir in [temp_dir, reversed_dir, output_dir]:
+        if os.path.exists(dir):
+            shutil.rmtree(dir)
+        os.makedirs(dir)
 
     split_video(input_path, segment_duration, temp_dir)
     reverse_segment(temp_dir, reversed_dir)
-    # reverse_audio(input_path, temp_dir, audio_reversed_dir)
-    concatenate_segments(reversed_dir=reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
-    # combine_audio_video(video_path=f"{temp_dir}/reversed.mp4", audio_path=f'{temp_dir}/reversed_audio.mp4', output_path=f'{output_dir}/{output_name}.mp4')
+    concatenate_segments(reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
 
 
 def split_video(input_path, segment_duration, temp_dir):
@@ -206,88 +194,6 @@ def process_segment(input_path, output_path, gpu_deivce):
             raise Exception(f"에러 발생 종료 (재시도 후): {output} | {errors}")
 
 
-def reverse_audio(input_path, temp_dir, audio_reversed_dir):
-    print("reverse audio")
-    if not os.path.exists(audio_reversed_dir):
-        os.makedirs(audio_reversed_dir)
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    if not os.path.exists(f"{temp_dir}/audio"):
-        os.makedirs(f"{temp_dir}/audio")
-
-    temp_dir_audio = f"{temp_dir}/audio"
-    segment_duration = 10
-    split_audio(input_path, segment_duration, temp_dir_audio)
-    reverse_segment_audio_process(temp_dir_audio, audio_reversed_dir)
-    concat_segments_audio(audio_reversed_dir, temp_dir)
-
-    # command = [
-    #     'ffmpeg',
-    #     '-hwaccel', 'cuda',
-    #     '-i', input_path,
-    #     '-start_at_zero',
-    #     '-threads', '0',
-    #     '-map', '0:a',
-    #     '-vn',
-    #     '-progress', '-',  # 진행률 표시
-    #     '-af', 'areverse',
-    #     '-c:a', 'aac',
-    #     '-channel_layout', 'stereo',
-    #     f'{temp_dir}/reversed_audio.mp4',
-    #     '-y'
-    # ]
-    #
-    # process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    # process_bar(process)
-    # print("reverse audio Done")
-
-
-def split_audio(input_path, segment_duration, temp_dir):
-    print("split audio")
-    command = [
-        'ffmpeg',
-        '-i', input_path,
-        '-map', '0:a',
-        '-vn',
-        '-c', 'copy',
-        '-f', 'segment',
-        '-segment_time', str(segment_duration),
-        '-break_non_keyframes', '0',
-        '-reset_timestamps', '1',
-        '-channel_layout', 'stereo',
-        '-y',
-        f'{temp_dir}/audio_segment%010d.ts'
-    ]
-
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
-
-
-def reverse_segment_audio_process(temp_dir, reversed_dir):
-    """분할된 모든 오디오 세그먼트를 역순으로 만듭니다."""
-    if not os.path.exists(reversed_dir):
-        os.makedirs(reversed_dir)
-
-    with ThreadPoolExecutor(max_workers=max_worker) as executor:
-        count = 0
-        segment_files = sorted(os.listdir(temp_dir))
-        total_segments = len(segment_files)
-
-        with ThreadPoolExecutor(max_workers=max_worker) as executor:
-            future_to_segment = {executor.submit(process_segment_audio, os.path.join(temp_dir, seg_file),
-                                                 os.path.join(reversed_dir, seg_file)): seg_file for seg_file in
-                                 segment_files}
-            for i, future in enumerate(as_completed(future_to_segment), 1):
-                segment = future_to_segment[future]
-                try:
-                    future.result()
-                    count += 1
-                    print(
-                        f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments}")
-                except Exception as exc:
-                    print(f"{segment} 처리 중 에러 발생: {exc}")
-
-
 def process_segment_audio(input_path, output_path):
     """하나의 오디오 세그먼트를 역순으로 만듭니다."""
     command = [
@@ -304,29 +210,6 @@ def process_segment_audio(input_path, output_path):
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
-
-
-def concat_segments_audio(reversed_dir, output_path):
-    print("concatenate segments audio")
-    with open('audio_segments.txt', 'w') as f:
-        for segment_file in sorted(os.listdir(reversed_dir), reverse=True):
-            f.write(f"file '{os.path.join(reversed_dir, segment_file)}'\n")
-
-    command = [
-        'ffmpeg',
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'audio_segments.txt',
-        '-c', 'copy',
-        f'{output_path}/reversed_audio.mp4',
-        '-progress', '-',  # 진행률 표시
-        '-y',
-    ]
-
-    process = subprocess.run(command, universal_newlines=True)
-    # process_bar(process)
-    print("concatenate segments audio Done")
-    os.remove('audio_segments.txt')
 
 
 def concatenate_segments(reversed_dir, output_path):
@@ -354,25 +237,6 @@ def concatenate_segments(reversed_dir, output_path):
     os.remove('segments.txt')
 
 
-def combine_audio_video(video_path, audio_path, output_path):
-    print("combine audio video")
-    command = [
-        'ffmpeg',
-        '-i', video_path,
-        '-i', audio_path,
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        '-threads', '0',
-        f"{output_path}",
-        '-progress', '-',
-        '-y'
-    ]
-
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
-    print("combine audio video Done")
-
-
 def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
     for root, dirs, files in os.walk(dir_path):
         for i, file in enumerate(files):
@@ -380,8 +244,6 @@ def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
                 input_path = os.path.join(root, file)
                 print(f"Processing: {input_path}")
                 print(f"Processing remaining: {len(files)} : {len(files) - (i + 1)} |  {file}")
-                # divide_2x2_with_progress(input_path, divide_tmp)
-                # merge_tile_2x2(divide_tmp, f"{merge_tmp}/merged.mp4")
                 reverse_video(input_path, output_dir, temp_dir, reverse_dir, file)
 
 
