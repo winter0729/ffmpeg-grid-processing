@@ -12,24 +12,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 max_worker = 8
 gpu_devices = itertools.cycle([0])
 
-def progressbar(label, total):
-    pbar = tqdm(total=total, desc=label, unit='B', unit_scale=True, unit_divisor=1024)
-    return pbar
-
-def divide_crop(input_path, output_dir, options = None):
-    print("Input source: ", input_path)
-    if options is None:
-        print("No options")
-    else:
-        print("Options: ", options)
-
-    if options == 1:
-        divide_2x2(input_path, output_dir)
-    # elif options == 2:
-    #     divide_3x3(input_path, output_dir)
-    # elif options == 3:
-    #     divide_4x4(input_path, output_dir)
-
 
 def get_video_info(input_path):
     command = [
@@ -44,191 +26,42 @@ def get_video_info(input_path):
     result = json.loads(result.stdout)
     return result
 
+
 def process_bar(process):
     pbar = tqdm(total=None)
     for line in process.stdout:
-       # 출력에서 "Duration: 00:00:
-       # .04"와 같은 라인을 찾아서 전체 동영상 길이를 가져옵니다.
-       if "Duration" in line:
-           match = re.search("Duration: (.*?),", line)
-           if match:
-               time_str = match.group(1)
-               try:
-                   hours, minutes, seconds = map(float, re.split(':', time_str))
-                   total_seconds = hours * 3600 + minutes * 60 + seconds
-                   pbar.total = total_seconds
-                   pbar.refresh()
-               except ValueError:
-                   # 유효하지 않은 시간 형식을 만났을 때의 처리
-                   print(f"유효하지 않은 시간 형식: {time_str}")
-                   continue  # 다음 라인으로 넘어갑니다.
+        # 출력에서 "Duration: 00:00:
+        # .04"와 같은 라인을 찾아서 전체 동영상 길이를 가져옵니다.
+        if "Duration" in line:
+            match = re.search("Duration: (.*?),", line)
+            if match:
+                time_str = match.group(1)
+                try:
+                    hours, minutes, seconds = map(float, re.split(':', time_str))
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
+                    pbar.total = total_seconds
+                    pbar.refresh()
+                except ValueError:
+                    # 유효하지 않은 시간 형식을 만났을 때의 처리
+                    print(f"유효하지 않은 시간 형식: {time_str}")
+                    continue  # 다음 라인으로 넘어갑니다.
 
-           # 출력에서 "time=00:00:10.00"과 같은 라인을 찾아서 현재 진행 시간을 가져옵니다.
-       if "time=" in line:
-           match = re.search("time=(.*?) ", line)
-           if match:
-               time_str = match.group(1)
-               try:
-                   hours, minutes, seconds = map(float, re.split(':', time_str))
-                   elapsed_seconds = hours * 3600 + minutes * 60 + seconds
-                   pbar.n = elapsed_seconds
-                   pbar.refresh()
-               except ValueError:
-                   # 유효하지 않은 시간 형식을 만났을 때의 처리
-                   print(f"유효하지 않은 시간 형식: {time_str}")
-                   continue  # 다음 라인으로 넘어갑니다.
+            # 출력에서 "time=00:00:10.00"과 같은 라인을 찾아서 현재 진행 시간을 가져옵니다.
+        if "time=" in line:
+            match = re.search("time=(.*?) ", line)
+            if match:
+                time_str = match.group(1)
+                try:
+                    hours, minutes, seconds = map(float, re.split(':', time_str))
+                    elapsed_seconds = hours * 3600 + minutes * 60 + seconds
+                    pbar.n = elapsed_seconds
+                    pbar.refresh()
+                except ValueError:
+                    # 유효하지 않은 시간 형식을 만났을 때의 처리
+                    print(f"유효하지 않은 시간 형식: {time_str}")
+                    continue  # 다음 라인으로 넘어갑니다.
     pbar.close()
 
-
-def divide_2x2(input_path, output_dir):
-    print("divide 2x2")
-    result = get_video_info(input_path)
-    duration = result['format']['duration']
-    width = result['streams'][0]['width']
-    height = result['streams'][0]['height']
-    print("Duration: ", duration)
-    print("Width: ", width)
-    print("Height: ", height)
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    input_video = ffmpeg.input(input_path)
-    crop_width, crop_height = width // 2, height // 2
-
-    # # 2x2 크롭 영역 정의
-    # # 각 영역별 크롭 및 출력 설정
-    top_left = input_video.crop(x=0, y=0, width=crop_width, height=crop_height)
-    top_right = input_video.crop(x=crop_width, y=0, width=crop_width, height=crop_height)
-    bottom_left = input_video.crop(x=0, y=crop_height, width=crop_width, height=crop_height)
-    bottom_right = input_video.crop(x=crop_width, y=crop_height, width=crop_width, height=crop_height)
-    #
-    # process = ffmpeg.run([
-    #     ffmpeg.output(top_left, f'{output_dir}/top_left.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    #     ffmpeg.output(top_right, f'{output_dir}/top_right.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    #     ffmpeg.output(bottom_left, f'{output_dir}/bottom_left.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    #     ffmpeg.output(bottom_right, f'{output_dir}/bottom_right.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    # ], capture_stdout=True, capture_stderr=True, overwrite_output=True)
-
-    # #crop 1/2
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, 0, 0)
-    #     .output(output_dir + '/1.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='-', y='-y')
-    #     .run()
-    # )
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, width // 2, 0)
-    #     .output(output_dir + '/2.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='pipe:1', y='-y')
-    #     .run()
-    # )
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, 0, height // 2)
-    #     .output(output_dir + '/3.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='pipe:1', y='-y')
-    #     .run()
-    # )
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, width // 2, height // 2)
-    #     .output(output_dir + '/4.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='pipe:1', y='-y')
-    #     .run()
-    # )
-
-
-def divide_2x2_with_progress(input_path, output_dir):
-    print("divide 2x2")
-    result = get_video_info(input_path)
-    duration = result['format']['duration']
-    width = result['streams'][0]['width']
-    height = result['streams'][0]['height']
-    print("Duration: ", duration)
-    print("Width: ", width)
-    print("Height: ", height)
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    crop_width, crop_height = width // 2, height // 2
-
-    cmd = [
-        'ffmpeg',
-        '-i', input_path,
-        '-filter_complex',
-        f'[0:v]crop={crop_width}:{crop_height}:0:0[1]; '
-        f'[0:v]crop={crop_width}:{crop_height}:iw/2:0[2]; '
-        f'[0:v]crop={crop_width}:{crop_height}:0:ih/2[3]; '
-        f'[0:v]crop={crop_width}:{crop_height}:iw/2:ih/2[4]',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[1]', f'{output_dir}/1.mp4',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[2]', f'{output_dir}/2.mp4',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[3]', f'{output_dir}/3.mp4',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[4]', f'{output_dir}/4.mp4',
-
-        '-progress', '-',
-        '-y'
-    ]
-
-    # ffmpeg 프로세스 시작
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
-
-def merge_tile_2x2(tile_path, output_path):
-    split_tiles = ([4,3],
-                   [2,1])
-
-    command = [
-        'ffmpeg',
-    ]
-
-    for row in split_tiles:
-        for title in row:
-            title_path = f"{tile_path}/{title}.mp4"
-            print(f"Title Path: {title_path}")
-            command.extend(['-i', title_path])
-
-    # input1(0, 0) | input3(w0, 0)
-    # input2(0, h0) | input4(w0, h0)
-    # https://ffmpeg.org/ffmpeg-filters.html#xstack-1
-    #pprint.pprint(command)
-    filter_complex_str = "xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0[v];"
-
-    command.extend([
-        '-filter_complex', filter_complex_str,
-        '-progress', '-',
-        '-map', '[v]',
-        '-map', '0:a?',
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        '-b:v', '8000k',
-        '-strict', 'experimental',  # 일부 ffmpeg 버전에서 aac 오디오 코덱을 사용할 때 필요
-        '-y',
-        output_path
-    ])
-
-    pprint.pprint(command)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
 
 def reverse_video(input_path, output_dir, temp_dir, reversed_dir, audio_reversed_dir, output_name):
     print("reverse video")
@@ -253,9 +86,10 @@ def reverse_video(input_path, output_dir, temp_dir, reversed_dir, audio_reversed
 
     split_video(input_path, segment_duration, temp_dir)
     reverse_segment(temp_dir, reversed_dir)
-    #reverse_audio(input_path, temp_dir, audio_reversed_dir)
+    # reverse_audio(input_path, temp_dir, audio_reversed_dir)
     concatenate_segments(reversed_dir=reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
-    #combine_audio_video(video_path=f"{temp_dir}/reversed.mp4", audio_path=f'{temp_dir}/reversed_audio.mp4', output_path=f'{output_dir}/{output_name}.mp4')
+    # combine_audio_video(video_path=f"{temp_dir}/reversed.mp4", audio_path=f'{temp_dir}/reversed_audio.mp4', output_path=f'{output_dir}/{output_name}.mp4')
+
 
 def split_video(input_path, segment_duration, temp_dir):
     print("split video")
@@ -282,11 +116,11 @@ def split_video(input_path, segment_duration, temp_dir):
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
 
+
 def reverse_segment(temp_dir, reversed_dir):
     """분할된 모든 비디오 세그먼트를 역순으로 만듭니다."""
     if not os.path.exists(reversed_dir):
         os.makedirs(reversed_dir)
-
 
     segment_files = sorted(os.listdir(temp_dir))
     total_segments = len(segment_files)
@@ -309,7 +143,8 @@ def reverse_segment(temp_dir, reversed_dir):
             try:
                 future.result()
                 count += 1
-                print(f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments} | 할당 GPU: {gpu_device}")
+                print(
+                    f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments} | 할당 GPU: {gpu_device}")
             except subprocess.CalledProcessError as exc:
                 print(f"{segment} 처리 중 ffmpeg 에러 발생 (GPU {gpu_device}): {exc}")
             except Exception as exc:
@@ -333,6 +168,7 @@ def reverse_segment(temp_dir, reversed_dir):
     #     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     #     process_bar(process)
 
+
 def process_segment(input_path, output_path, gpu_deivce):
     """하나의 비디오 세그먼트를 역순으로 만듭니다."""
     command = [
@@ -346,7 +182,7 @@ def process_segment(input_path, output_path, gpu_deivce):
         '-vf', 'reverse,setpts=PTS-STARTPTS',  # 비디오 프레임 역순 및 타임스탬프 조정
         '-af', 'areverse,asetpts=PTS-STARTPTS',  # 오디오 프레임 역순 및 타임스탬프 조정
         '-c:v', 'h264_nvenc',
-        #'-gpu', f'{gpu_deivce}',
+        # '-gpu', f'{gpu_deivce}',
         '-c:a', 'aac',
         '-avoid_negative_ts', 'make_zero',
         # '-vsync', '0',
@@ -405,8 +241,8 @@ def reverse_audio(input_path, temp_dir, audio_reversed_dir):
     # process_bar(process)
     # print("reverse audio Done")
 
-def split_audio(input_path, segment_duration, temp_dir):
 
+def split_audio(input_path, segment_duration, temp_dir):
     print("split audio")
     command = [
         'ffmpeg',
@@ -425,6 +261,7 @@ def split_audio(input_path, segment_duration, temp_dir):
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
+
 
 def reverse_segment_audio_process(temp_dir, reversed_dir):
     """분할된 모든 오디오 세그먼트를 역순으로 만듭니다."""
@@ -445,9 +282,11 @@ def reverse_segment_audio_process(temp_dir, reversed_dir):
                 try:
                     future.result()
                     count += 1
-                    print(f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments}")
+                    print(
+                        f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments}")
                 except Exception as exc:
                     print(f"{segment} 처리 중 에러 발생: {exc}")
+
 
 def process_segment_audio(input_path, output_path):
     """하나의 오디오 세그먼트를 역순으로 만듭니다."""
@@ -465,6 +304,7 @@ def process_segment_audio(input_path, output_path):
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
+
 
 def concat_segments_audio(reversed_dir, output_path):
     print("concatenate segments audio")
@@ -484,7 +324,7 @@ def concat_segments_audio(reversed_dir, output_path):
     ]
 
     process = subprocess.run(command, universal_newlines=True)
-    #process_bar(process)
+    # process_bar(process)
     print("concatenate segments audio Done")
     os.remove('audio_segments.txt')
 
@@ -513,6 +353,7 @@ def concatenate_segments(reversed_dir, output_path):
     print("reversed Done")
     os.remove('segments.txt')
 
+
 def combine_audio_video(video_path, audio_path, output_path):
     print("combine audio video")
     command = [
@@ -530,6 +371,7 @@ def combine_audio_video(video_path, audio_path, output_path):
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
     print("combine audio video Done")
+
 
 def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
     for root, dirs, files in os.walk(dir_path):
@@ -554,11 +396,4 @@ if __name__ == '__main__':
     output_dir = './output'
 
     # run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir)
-
-    # divide_2x2_with_progress(input_path, output_dir)
-    # merge_tile_2x2(output_dir, f"{output_dir}/merged.mp4")
     reverse_video(input_path, output_dir, temp_dir, reverse_dir, audio_reversed_dir, 'reversed_done')
-    #reverse_audio(input_path, temp_dir, audio_reversed_dir)
-    #concat_segments(filelist_path= f'{output_dir}/filelist.txt', output_path=f'{output_dir}/final_reversed.mp4')
-    #concatenate_segments(reverse_dir, output_path = f"{output_dir}/reversed.mp4")
-    #combine_audio_video(video_path=f"{output_dir}/reversed.mp4", audio_path=f'{temp_dir}/reversed_audio.mp4', output_path=f'{output_dir}/final_reversed.mp4')
