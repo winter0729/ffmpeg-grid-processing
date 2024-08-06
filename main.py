@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn, TimeElapsedColumn
 
 max_worker = 1
+segment_duration = 10
 gpu_devices = itertools.cycle([0])
 
 
@@ -28,9 +29,9 @@ def get_video_info(input_path):
     return result
 
 
-def process_bar(process):
+def process_bar(process, total_segments):
     with Progress() as progress:
-        task = progress.add_task("[cyan]Processing...", total=100)
+        task = progress.add_task("[cyan]Processing...", total=total_segments)
 
         for line in process.stdout:
             if "Duration" in line:
@@ -41,7 +42,7 @@ def process_bar(process):
             if "time=" in line:
                 elapsed_seconds = extract_seconds(line, "time=(.*?) ")
                 if elapsed_seconds is not None:
-                    progress.update(task, completed=elapsed_seconds)
+                    progress.update(task, completed=int(elapsed_seconds / segment_duration))
 
 
 def extract_seconds(line, pattern):
@@ -57,7 +58,6 @@ def extract_seconds(line, pattern):
 
 
 def reverse_video(input_path, output_dir, temp_dir, reversed_dir, output_name):
-    segment_duration = 10
 
     for directory in [temp_dir, reversed_dir]:
         if os.path.exists(directory):
@@ -71,9 +71,35 @@ def reverse_video(input_path, output_dir, temp_dir, reversed_dir, output_name):
     asyncio.run(reverse_segment(temp_dir, reversed_dir))
     concatenate_segments(reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
 
+# 사용가능한 GPU 체크
+def get_gpu_devices():
+    command = [
+        'nvidia-smi',
+        '--query-gpu=index',
+        '--format=csv,noheader'
+    ]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    return [int(gpu_index) for gpu_index in result.stdout.splitlines()]
 
+
+async def check_gpu_usage():
+    while True:
+        for gpu_device in gpu_devices:
+            command = [
+                'nvidia-smi',
+                '--query-gpu=utilization.encoder',
+                f'--id={gpu_device}',
+                '--format=csv,noheader,nounits'
+            ]
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            print(f"GPU {gpu_device} usage: {result.stdout.strip()}%")
+        await asyncio.sleep(10)
 def split_video(input_path, segment_duration, temp_dir):
     print("split video")
+
+    video_info = get_video_info(input_path)
+    total_duration = float(video_info['format']['duration'])
+    total_segments = int(total_duration / segment_duration)
 
     command = [
         'ffmpeg',
@@ -93,7 +119,7 @@ def split_video(input_path, segment_duration, temp_dir):
     ]
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
+    process_bar(process, total_segments)
 
 
 async def worker(name, queue, progress, task_id):
